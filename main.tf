@@ -7,6 +7,13 @@ provider "aws" {
   region = "ap-south-1"
 }
 
+data "aws_caller_identity" "iamuser" {}
+
+
+data "aws_region" "region" {
+  current = true
+}
+
 # ------------------------------------------------------------------------------
 # CONFIGURE OUR AWS STACK
 # ------------------------------------------------------------------------------
@@ -20,7 +27,7 @@ resource "aws_opsworks_stack" "stack_myphp" {
   configuration_manager_version = "11.10"
 
   use_custom_cookbooks          = true
-  custom_cookbooks_source{
+  custom_cookbooks_source {
     type                        = "git"
     url                         = "https://github.com/amazonwebservices/opsworks-example-cookbooks.git"
   }
@@ -47,6 +54,7 @@ resource "aws_opsworks_mysql_layer" "layer_mysql" {
   auto_assign_public_ips  = true
   drain_elb_on_shutdown   = true
   root_password           = "SimplePassword01"
+  root_password_on_all_instances  = true
 
   # chef
   custom_setup_recipes     = []
@@ -54,7 +62,16 @@ resource "aws_opsworks_mysql_layer" "layer_mysql" {
   custom_deploy_recipes    = ["phpapp::dbsetup"]
   custom_undeploy_recipes  = []
   custom_shutdown_recipes  = []
+
+  ebs_volume {
+    mount_point     = "/vol/mysql" 
+    size            = 10
+    type            = "standard" 
+    number_of_disks = 1
   }
+
+  auto_healing            = false
+}
 
 resource "aws_opsworks_php_app_layer" "layer_myphp" {
   name                          = "myphp-custom-layer"
@@ -81,28 +98,21 @@ resource "aws_opsworks_instance" "instance_myphp" {
     stack_id                    = "${aws_opsworks_stack.stack_myphp.id}"
     layer_ids                   = ["${aws_opsworks_php_app_layer.layer_myphp.id}"]
     os                          = "Amazon Linux 2017.09"
-    instance_type               = "t2.micro"
+    instance_type               = "t2.small"
     state                       = "running"
     root_device_type            = "ebs"
 }
 
-resource "aws_db_instance" "instance_mysql" {
-  allocated_storage    = 10
-  storage_type         = "standard"
-  engine               = "mysql"
-  engine_version       = "5.7.19"
-  instance_class       = "db.t2.small"
-  name                 = "simplephpapp"
-  username             = "root"
-  password             = "SimplePassword01"
-}
-
-resource "aws_opsworks_rds_db_instance" "opsworks_db_instance" {
-  stack_id            = "${aws_opsworks_stack.stack_myphp.id}"
-  rds_db_instance_arn = "${aws_db_instance.instance_mysql.arn}"
-  db_user             = "${aws_db_instance.instance_mysql.username}"
-  db_password         = "${aws_db_instance.instance_mysql.password}"
-}
+resource "aws_opsworks_instance" "instance_mysql" {
+    count                       = 1
+    availability_zone           = "ap-south-1a"
+    stack_id                    = "${aws_opsworks_stack.stack_myphp.id}"
+    layer_ids                   = ["${aws_opsworks_mysql_layer.layer_mysql.id}"]
+    os                          = "Amazon Linux 2017.09"
+    instance_type               = "t2.small"
+    state                       = "running"
+    root_device_type            = "ebs" 
+  }
 
 resource "aws_opsworks_permission" "stack_permission" {
   allow_ssh  = true
@@ -119,7 +129,7 @@ resource "aws_opsworks_application" "app_myphp" {
   short_name  = "simplephpapp"
   stack_id    = "${aws_opsworks_stack.stack_myphp.id}"
   type        = "php"
-  description = "This is a PHP demo appl ication"
+  description = "This is a PHP demo application"
 
   app_source = {
     type     = "git"
@@ -129,6 +139,6 @@ resource "aws_opsworks_application" "app_myphp" {
 
   document_root             = "web"
   data_source_type          = "OpsworksMysqlInstance"
-  data_source_arn           = "${aws_db_instance.instance_mysql.arn}"
+  data_source_arn           = "arn:aws:opsworks:${data.aws_region.region.name}:${data.aws_caller_identity.iamuser.account_id}:instance/${aws_opsworks_instance.instance_mysql.id}"
   data_source_database_name = "simplephpapp"
 }
